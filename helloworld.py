@@ -30,6 +30,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = myform()
     window.show()
+    print("这是个改变")
     print("这是个例子")
     sys.exit(app.exec_())
     
