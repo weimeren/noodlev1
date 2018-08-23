@@ -52,7 +52,7 @@ class Ui_Login(QtWidgets.QDialog):
         Login.setWindowTitle(_translate("Login", "欢迎登陆"))
         self.label.setText(_translate("Login", "用户名："))
         self.label_2.setText(_translate("Login", "密码："))
-        self.LEusername.setPlaceholderText(_translate("Login", "用户名Admin"))
+        self.LEusername.setPlaceholderText(_translate("Login", "Admin"))
         self.LEpassword.setPlaceholderText(_translate("Login", "\"密码只能数字和字母\""))
         self.BTlogin.setText(_translate("Login", "登陆"))
         self.BTesc.setText(_translate("Login", "退出"))

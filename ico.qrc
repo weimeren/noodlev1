@@ -1,0 +1,13 @@
+<RCC>
+  <qresource prefix="ico">
+    <file>ico/111.JPG</file>
+    <file>ico/222.JPG</file>
+    <file>ico/ccw.png</file>
+    <file>ico/cw.png</file>
+    <file>ico/down.png</file>
+    <file>ico/lift.png</file>
+    <file>ico/right.png</file>
+    <file>ico/Untitled.JPG</file>
+    <file>ico/up.png</file>
+  </qresource>
+</RCC>
