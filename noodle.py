@@ -53,6 +53,10 @@ from time import sleep
 from login import Ui_Login
 from set import Ui_Set
 from mainform import MainForm
+#####################################
+#使用pyinstaller打包时总是提示找不到PyQt5.sip，在代码里面导入后打包成功from PyQt5 import sip
+####################################
+from PyQt5 import sip
 import sys
 
 # 主窗体

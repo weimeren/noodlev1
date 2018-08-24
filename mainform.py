@@ -79,7 +79,7 @@ class MainForm(QWidget):
 
 		# 等待界面图片和进度
 		self.MyWait = QLabel(self)
-		self.MyWait.setPixmap(QPixmap("img/wait.jpg"))
+		self.MyWait.setPixmap(QPixmap("./img/wait.jpg"))
 		self.MyWait.setGeometry(160, 140, 1600, 800)
 		# 倒计时
 		self.Mytime = QLabel(self)
