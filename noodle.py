@@ -41,9 +41,9 @@
 ##
 #############################################################################
 
-from PyQt5.QtCore import (QSettings,Qt,pyqtSignal,QSize,QCoreApplication)
+from PyQt5.QtCore import (QSettings,Qt,pyqtSignal,QSize,QCoreApplication,QTimer,QDateTime)
 from PyQt5.QtGui import QPixmap,QMovie,QPalette,QBrush,QCursor,QFont
-from PyQt5.QtWidgets import (QApplication,QMessageBox,QLabel,QDialog,QWidget,QMenu)
+from PyQt5.QtWidgets import (QApplication,QMessageBox,QLabel,QDialog,QWidget,QMenu,QStyleFactory)
 import threading
 import serial
 import serial.tools.list_ports
@@ -53,8 +53,11 @@ from time import sleep
 from login import Ui_Login
 from set import Ui_Set
 from mainform import MainForm
+import MySqlHelper
+import hashlib
 #####################################
 #使用pyinstaller打包时总是提示找不到PyQt5.sip，在代码里面导入后打包成功from PyQt5 import sip
+#或者在打包完成后，对应目录下添加PyQt5.sip.pyd文件也可以运行
 ####################################
 from PyQt5 import sip
 import sys
@@ -62,25 +65,42 @@ import sys
 # 主窗体
 class MyMain(MainForm):
     # updata_singnal数据更新信号，剩余时间，出面碗数
-    # display_singnal等待界面弹出
-    # hide_singnal等待界面隐藏
-    updata_singnal = pyqtSignal(int, int, int)
-    display_singnal = pyqtSignal()
-    hide_singnal = pyqtSignal()
+    updata_singnal = pyqtSignal(int, int, int, int)
+
     def __init__(self , parent=None):
         super(MyMain , self).__init__(parent)
         # 必须将ContextMenuPolicy设置为Qt.CustomContextMenu
         # 否则无法使用customContextMenuRequested信号
-        self.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.customContextMenuRequested.connect(self.showContextMenu)
+        # self.setContextMenuPolicy(Qt.CustomContextMenu)
+        # self.customContextMenuRequested.connect(self.showContextMenu)
+        #更新倒计时时间
+        self.updata_singnal.connect(self.update_display)
+
+
+    def update_display(self,time,noodle,water,sauce):
+        self.Mytime.setText(str(time))
+        setWindow.noodle_num.setText(str(noodle))
+        setWindow.water_num.setText(str(water))
+        setWindow.sauce_num.setText(str(sauce))
+
+
+    def wait_display(self):
+        self.MyWait.setVisible(True)
+        self.Mytime.setVisible(True)
+
+
+    def wait_hide(self):
+        self.MyWait.setVisible(False)
+        self.Mytime.setVisible(False)
 
     # 添加右键按钮
-    def showContextMenu(self):
-        self.contextMenu = QMenu(self)
-        self.login = self.contextMenu.addAction("login")
-        self.login.triggered.connect(loginWindow.show)
-        self.contextMenu.addAction(self.login)
-        self.contextMenu.exec_(QCursor.pos())
+    # def showContextMenu(self):
+    #     self.contextMenu = QMenu(self)
+    #     self.login = self.contextMenu.addAction("login")
+    #     self.login.triggered.connect(loginWindow.show)
+    #     self.contextMenu.addAction(self.login)
+    #     self.contextMenu.exec_(QCursor.pos())
+
 
     def modbus_plc(self,send_data = []):
         #初始化接受数据存储列表
@@ -97,7 +117,6 @@ class MyMain(MainForm):
             self.master.set_verbose(True)
         except Exception:
             print("没有对应串口")
-            pass
 
         while (True):
             try:
@@ -117,13 +136,14 @@ class MyMain(MainForm):
                 # logger.error("%s- Code=%d", exc, exc.get_exception_code())
                 pass
             if self.rcv_data[0] >= 1:
-                self.display_singnal.emit()
+                self.wait_display()
             else:
-                self.hide_singnal.emit()
+                self.wait_hide()
             print(self.rcv_data[1])
-            self.updata_singnal.emit(self.rcv_data[1], self.rcv_data[2], self.rcv_data[3])
+            self.updata_singnal.emit(self.rcv_data[1], self.rcv_data[2], self.rcv_data[3], self.rcv_data[4])
             print("haha")
-            sleep(0.5)
+            sleep(0.2)
+
 
 # 登陆窗体类
 class Mylogin(Ui_Login):
@@ -134,26 +154,86 @@ class Mylogin(Ui_Login):
         self.setupUi(self)
         #设置登陆窗体为模态
         self.setWindowModality(Qt.ApplicationModal)
-        self.BTesc.clicked.connect(self.esc)
         self.BTlogin.clicked.connect(self.login)
+        #设置窗体样式
+        MyPalette = QPalette()
+        data = "./img/login.jpg"
+        MyPalette.setBrush(self.backgroundRole(), QBrush(QPixmap(data)))  # 设置背景图片
+        self.setPalette(MyPalette)
+        #设置倒计时，20s后未登陆则进入主界面
+        self.stopwatch = QTimer(self)
+        self.stopwatch.timeout.connect(self.showtime)
+        self.stopwatch.start(1000)
+        self.second = 20
+        #开机时间记录到mysql
+        self.get_now_time()
+        #创建一个1min计时器，每分钟更新机器状态数据到数据库
+        self.updateTimer = QTimer(self)
+        self.updateTimer.timeout.connect(self.update_machine)
+        self.updateTimer.start(10000)
+        #连接状态status一分钟变化一次心跳
+        self.connect_status = True
+    #每分钟更新程序状态数据到数据库
+    def update_machine(self):
+        if self.connect_status ==True:
+            self.connect_status=False
+        else:
+            self.connect_status=True
+        update_data = [int(setWindow.sauce_num.text()),
+                       self.connect_status,
+                       int(setWindow.noodle_num.text()),
+                       int(setWindow.water_num.text()),
+                       setWindow.heat_time.value(),
+                       setWindow.water_into_time.value()
+                       ]
+        update_data_sql = "update machines set state=%s, conn=%s, noodlenum=%s,waternum=%s,heattime=%s,injectwatertime=%s where sn='30038935'"
+        self.sqlhelp.cud(update_data_sql,update_data)
+    #每次程序启动把启动时间写到数据库
+    def get_now_time(self):
+        # 连接阿里云mysql数据库，公网IP为47.96.104.151，端口3306，数据库noodle,表user
+        # 表user-->>id，username,password,loigntime,idDelete
+        self.sqlhelp = MySqlHelper.MySqlHelper('47.96.104.151', 3306, 'root', 'mysql', 'noodle')
+        machinesql = "select * from machines where sn='30038935'"
+        machinelist = self.sqlhelp.get(machinesql, [])
+        starttime = QDateTime.currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
+        starttimesql = "update machines set starttime=%s where sn='30038935'"
+        self.sqlhelp.cud(starttimesql,[starttime])
+        print(starttime)
 
     #点击登陆按钮，验证密码是否正确，正确这进入主界面，错误则弹出错误窗口
     def login(self):
         """用户名不区分大小写，密码为数字或者字母，但验证正确时弹出调试窗口"""
-        setWindow.show()
-        if self.LEpassword.text() == "123" and  self.LEusername.text().lower() == "admin":
-            setWindow.show()
-            self.done(1)
-            self.loginsignal.emit()
+        # setWindow.show()
+        #使用shal加密，占用40个字符
+        shal = hashlib.sha1()
+        username = self.LEusername.text()
+        password = self.LEpassword.text()
+        shal.update(password.encode('utf-8'))
+        passwordshal = shal.hexdigest()
+        #登陆用的sql语句
+        loginsql = "select * from user where username = %s "
+        list= self.sqlhelp.get(loginsql,[username])
+        if not list :
+            QMessageBox.warning(self, "警告", "用户名错误，请重新输入")
+        elif list[0][2]!=passwordshal:
+            QMessageBox.warning(self, "警告", "密码错误，请重新输入")
         else:
-            QMessageBox.warning(self, "警告", "密码或用户名错误，请重新输入")
-    #点击退出按钮后，登陆对话框退出
-    def esc(self):
-        print("这是退出的按钮")
-        self.done(1)
+            setWindow.show()
+            self.stopwatch.timeout.disconnect(self.showtime)
+            self.LEpassword.clear()
+            self.done(1)
+    #时间到达后未登陆则进入主界面
+    def showtime(self):
+        self.second = self.second-1
+        self.LBtime.setText(str(self.second))
+        if self.second ==0:
+            self.second = 20
+            self.done(1)
+            mainWindow.show()
+            self.stopwatch.timeout.disconnect(self.showtime)
 
-    def loginshow(self):
-        self.show()
+
+
 
 
 # 设置与调试窗体
@@ -169,8 +249,11 @@ class Myset(QDialog, Ui_Set):
         self.init_setting()
         # 发送的数据
         self.send_data = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,]
+        self.setStyle(QStyleFactory.create("Fusion"))
 
-
+    #显示当前时间
+    def showtime(self):
+        self.LBbottom.setText(QDateTime.currentDateTime().toString("yyyy-MM-dd hh:mm:ss"))
     # 保存设置到的时间参数
     def Mysetting(self):
         self.setting.setValue("/time/heat_time", self.heat_time.value())
@@ -210,162 +293,187 @@ class Myset(QDialog, Ui_Set):
         self.sauce_time.valueChanged.connect(self.Mysetting)
         self.pepper_time.valueChanged.connect(self.Mysetting)
         # 把所有按钮与对应槽函数连接
-        self.x_lift.toggled.connect(self.x_lift_Press)
-        self.x_right.toggled.connect(self.x_right_Press)
-        self.y_up.toggled.connect(self.y_up_Press)
-        self.y_down.toggled.connect(self.y_down_Press)
-        self.z_cw.toggled.connect(self.z_cw_Press)
-        self.z_ccw.toggled.connect(self.z_ccw_Press)
-        self.f_open.toggled.connect(self.f_open_Press)
-        self.f_close.toggled.connect(self.f_close_Press)
-        self.b_open.toggled.connect(self.b_open_Press)
-        self.b_close.toggled.connect(self.b_close_Press)
-        self.p_shrink.toggled.connect(self.p_shrink_Press)
-        self.p_stretch.toggled.connect(self.p_stretch_Press)
-        self.i_shrink.toggled.connect(self.i_shrink_Press)
-        self.i_stretch.toggled.connect(self.i_stretch_Press)
-        self.start.toggled.connect(self.start_Press)
-        self.unlock.toggled.connect(self.unlock_Press)
-        self.x_home.toggled.connect(self.x_home_Press)
-        self.y_home.toggled.connect(self.y_home_Press)
-        self.z_home.toggled.connect(self.z_home_Press)
-        self.noodle_reset.toggled.connect(self.noodle_reset_Press)
-        self.sauce_reset.toggled.connect(self.sauce_reset_Press)
-        self.water_reset.toggled.connect(self.water_reset_Press)
+        self.x_lift.pressed.connect(self.x_lift_Press)
+        self.x_right.pressed.connect(self.x_right_Press)
+        self.y_up.pressed.connect(self.y_up_Press)
+        self.y_down.pressed.connect(self.y_down_Press)
+        self.z_cw.pressed.connect(self.z_cw_Press)
+        self.z_ccw.pressed.connect(self.z_ccw_Press)
+        self.f_open.pressed.connect(self.f_open_Press)
+        self.f_close.pressed.connect(self.f_close_Press)
+        self.b_open.pressed.connect(self.b_open_Press)
+        self.b_close.pressed.connect(self.b_close_Press)
+        self.p_shrink.pressed.connect(self.p_shrink_Press)
+        self.p_stretch.pressed.connect(self.p_stretch_Press)
+        self.i_shrink.pressed.connect(self.i_shrink_Press)
+        self.i_stretch.pressed.connect(self.i_stretch_Press)
+        self.start.pressed.connect(self.start_Press)
+        self.unlock.pressed.connect(self.unlock_Press)
+        self.x_home.pressed.connect(self.x_home_Press)
+        self.y_home.pressed.connect(self.y_home_Press)
+        self.z_home.pressed.connect(self.z_home_Press)
+        self.noodle_reset.pressed.connect(self.noodle_reset_Press)
+        self.sauce_reset.pressed.connect(self.sauce_reset_Press)
+        self.water_reset.pressed.connect(self.water_reset_Press)
+        #按钮被释放
+        self.x_lift.released.connect(self.x_lift_release)
+        self.x_right.released.connect(self.x_right_release)
+        self.y_up.released.connect(self.y_up_release)
+        self.y_down.released.connect(self.y_down_release)
+        self.z_cw.released.connect(self.z_cw_release)
+        self.z_ccw.released.connect(self.z_ccw_release)
+        self.f_open.released.connect(self.f_open_release)
+        self.f_close.released.connect(self.f_close_release)
+        self.b_open.released.connect(self.b_open_release)
+        self.b_close.released.connect(self.b_close_release)
+        self.p_shrink.released.connect(self.p_shrink_release)
+        self.p_stretch.released.connect(self.p_stretch_release)
+        self.i_shrink.released.connect(self.i_shrink_release)
+        self.i_stretch.released.connect(self.i_stretch_release)
+        self.start.released.connect(self.start_release)
+        self.unlock.released.connect(self.unlock_release)
+        self.x_home.released.connect(self.x_home_release)
+        self.y_home.released.connect(self.y_home_release)
+        self.z_home.released.connect(self.z_home_release)
+        self.noodle_reset.released.connect(self.noodle_reset_release)
+        self.sauce_reset.released.connect(self.sauce_reset_release)
+        self.water_reset.released.connect(self.water_reset_release)
+
+        #退出按钮
         self.esc.clicked.connect(self.esc_Press)
 
 
     # 调试按钮按下的功能
     def x_lift_Press(self):
-        if self.x_lift.isChecked():
             self.send_data[0] = 1
-        else:
-            self.send_data[0] = 0
 
     def x_right_Press(self):
-        if self.x_right.isChecked():
             self.send_data[1] = 1
-        else:
-            self.send_data[1] = 0
 
     def y_up_Press(self):
-        if self.y_up.isChecked():
             self.send_data[2] = 1
-        else:
-            self.send_data[2] = 0
 
     def y_down_Press(self):
-        if self.y_down.isChecked():
             self.send_data[3] = 1
-        else:
-            self.send_data[3] = 0
 
     def z_cw_Press(self):
-        if self.z_cw.isChecked():
             self.send_data[4] = 1
-        else:
-            self.send_data[4] = 0
 
     def z_ccw_Press(self):
-        if self.z_ccw.isChecked():
             self.send_data[5] = 1
-        else:
-            self.send_data[5] = 0
 
     def f_open_Press(self):
-        if self.f_open.isChecked():
             self.send_data[6] = 1
-        else:
-            self.send_data[6] = 0
 
     def f_close_Press(self):
-        if self.f_close.isChecked():
             self.send_data[7] = 1
-        else:
-            self.send_data[7] = 0
 
     def b_open_Press(self):
-        if self.b_open.isChecked():
             self.send_data[8] = 1
-        else:
-            self.send_data[8] = 0
 
     def b_close_Press(self):
-        if self.b_close.isChecked():
             self.send_data[9] = 1
-        else:
-            self.send_data[9] = 0
 
     def i_shrink_Press(self):
-        if self.i_shrink.isChecked():
             self.send_data[10] = 1
-        else:
-            self.send_data[10] = 0
 
     def i_stretch_Press(self):
-        if self.i_stretch.isChecked():
             self.send_data[11] = 1
-        else:
-            self.send_data[11] = 0
 
     def p_shrink_Press(self):
-        if self.p_shrink.isChecked():
             self.send_data[12] = 1
-        else:
-            self.send_data[12] = 0
 
     def p_stretch_Press(self):
-        if self.p_shrink.isChecked():
             self.send_data[13] = 1
-        else:
-            self.send_data[13] = 0
 
     def start_Press(self):
-        if self.start.isChecked():
             self.send_data[14] = 1
-        else:
-            self.send_data[14] = 0
 
     def unlock_Press(self):
-        if self.unlock.isChecked():
             self.send_data[15] = 1
-        else:
-            self.send_data[15] = 0
 
     def x_home_Press(self):
-        if self.x_home.isChecked():
             self.send_data[16] = 1
-        else:
-            self.send_data[16] = 0
 
     def y_home_Press(self):
-        if self.y_home.isChecked():
             self.send_data[17] = 1
-        else:
-            self.send_data[17] = 0
 
     def z_home_Press(self):
-        if self.z_home.isChecked():
             self.send_data[18] = 1
-        else:
-            self.send_data[18] = 0
 
     def noodle_reset_Press(self):
-        if self.noodle_reset.isChecked():
             self.send_data[19] = 1
-        else:
-            self.send_data[19] = 0
 
     def water_reset_Press(self):
-        if self.water_reset.isChecked():
             self.send_data[20] = 1
-        else:
-            self.send_data[20] = 0
 
     def sauce_reset_Press(self):
-        if self.sauce_reset.isChecked():
             self.send_data[21] = 1
-        else:
+
+    def x_lift_release(self):
+            self.send_data[0] = 0
+
+    def x_right_release(self):
+            self.send_data[1] = 0
+
+    def y_up_release(self):
+            self.send_data[2] = 0
+
+    def y_down_release(self):
+            self.send_data[3] = 0
+
+    def z_cw_release(self):
+            self.send_data[4] = 0
+
+    def z_ccw_release(self):
+            self.send_data[5] = 0
+
+    def f_open_release(self):
+            self.send_data[6] = 0
+
+    def f_close_release(self):
+            self.send_data[7] = 0
+
+    def b_open_release(self):
+            self.send_data[8] = 0
+
+    def b_close_release(self):
+            self.send_data[9] = 0
+
+    def i_shrink_release(self):
+            self.send_data[10] = 0
+
+    def i_stretch_release(self):
+            self.send_data[11] = 0
+
+    def p_shrink_release(self):
+            self.send_data[12] = 0
+
+    def p_stretch_release(self):
+            self.send_data[13] = 0
+
+    def start_release(self):
+            self.send_data[14] = 0
+
+    def unlock_release(self):
+            self.send_data[15] = 0
+
+    def x_home_release(self):
+            self.send_data[16] = 0
+
+    def y_home_release(self):
+            self.send_data[17] = 0
+
+    def z_home_release(self):
+            self.send_data[18] = 0
+
+    def noodle_reset_release(self):
+            self.send_data[19] = 0
+
+    def water_reset_release(self):
+            self.send_data[20] = 0
+
+    def sauce_reset_release(self):
             self.send_data[21] = 0
 
     # 退出窗体
@@ -376,10 +484,12 @@ class Myset(QDialog, Ui_Set):
 # 程序入口
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    app.setStyle(QStyleFactory.create('Fusion'))
     # 3个窗体，主窗体，登陆窗体，设置窗体
     mainWindow = MyMain()
     loginWindow = Mylogin()
     setWindow = Myset()
+    loginWindow.stopwatch.timeout.connect(setWindow.showtime)
     # 使窗口大小和屏幕分辨率一样
     mainWindow.resize(1920, 1080)
     mainWindow.setWindowState(Qt.WindowFullScreen)
@@ -388,5 +498,6 @@ if __name__ == '__main__':
     modbus_thread.setDaemon(True)
     modbus_thread.start()
     # 进入循环
-    mainWindow.show()
+    # mainWindow.show()
+    loginWindow.show()
     sys.exit(app.exec_())
